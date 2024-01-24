@@ -6,8 +6,10 @@ from tkinter.filedialog import askopenfilename
 import scipy
 import tkinter.filedialog as tf
 import time
+import matplotlib.pyplot as plt
+import math
 
-# Initialize Pygame for easy display & user input 
+# Initialize Pygame for easy display & user input
 pygame.init()
 
 # Set up the window
@@ -17,14 +19,16 @@ pygame.display.set_caption("synth")
 
 # Generate data points for the starter sine wave
 num_points = 44100
-def generateSin(samples, freq):
-    x = np.linspace(-np.pi, np.pi, samples)
-    y = np.sin(x*freq)
+def generateSin(samples, freq, duration):
+    x = np.linspace(0, duration, samples*duration)
+    y = np.sin(2 * np.pi * freq * x)
     return y
 
 sample_rate = 44100
-starting_freq = 120
-y_values = generateSin(sample_rate, starting_freq)
+starting_freq = 200
+duration = 3
+y_values = (generateSin(sample_rate, starting_freq, duration) + generateSin(sample_rate, 3/2*starting_freq, duration) + generateSin(sample_rate, 81/64*starting_freq, duration))/3
+print('starting frequencies: ', str(starting_freq), str(81/64*starting_freq), str(3/2*starting_freq))
 
 #text variables
 font = pygame.font.SysFont('arial', 20)
@@ -46,6 +50,7 @@ blue = (0,0,255)
 scale = 1
 start_sample = 0
 toggle_follow = False
+freq_domain = False
 
 #scan line
 is_playing = False
@@ -56,6 +61,8 @@ total_duration = 1
 history = []
 history_index = 0
 
+sorted_fft_freq = 0
+
 # Main game loop
 running = True
 while running:
@@ -65,23 +72,56 @@ while running:
             running = False
         elif event.type == pygame.KEYDOWN:
             print(event.key)
-            if event.key == pygame.K_ESCAPE:
+            if event.key == pygame.K_ESCAPE:    #'esc' button pressed -- exit
                 running = False
-                print(y_values)
-            elif event.key == 107:    #'k' button pressed
+            elif event.key == 107:    #'k' button pressed -- draw a plot
                 print('k pressed')
+                vals = np.linspace(1,100,200)
+                plt.plot(range(len(vals)), vals)
+                plt.show()
+            elif event.key == 103:    #'g' button pressed -- add a sine wave at 40
+                print('adding sine wave')
+                selected_region = y_values[drag_rect.left*scale+start_sample:drag_rect.right*scale+1+start_sample]
+                print(len(selected_region))
+            elif event.key == 114:    #'r' button pressed -- return to sample 0
+                start_sample = 0
             elif event.key == 112:    #'p' button pressed -- play the sound
-                sd.play(y_values, sample_rate)
-                start_time = time.time()
-                is_playing = True
-            elif event.key == 102:    #'f' button pressed -- flatten the selected range to 0
-                print('flatten!')
+                if is_playing:
+                    sd.stop()
+                    is_playing = False
+                else:
+                    sd.play(y_values, sample_rate)
+                    start_time = time.time()
+                    is_playing = True
+            elif event.key == 102:    #'f' button pressed -- compute fft of selected region
+                selected_region = y_values[drag_rect.left*scale+start_sample:drag_rect.right*scale+1+start_sample]    #compute selected region
+                fft_result = np.fft.fft(selected_region)    #fft of region
+                fft_freq = np.fft.fftfreq(len(selected_region), 1/sample_rate)  #calculate corresponding frequencies
+                sorted_indices = np.argsort(fft_freq)   #sort the frequencies and corresponding fft
+                sorted_fft_freq = fft_freq[sorted_indices]
+                sorted_fft_result = fft_result[sorted_indices]
+                mask = sorted_fft_freq >= 0     #select only positive frequencies
+                reduced_freq = sorted_fft_freq[mask]
+                sorted_fft_result = sorted_fft_result[mask]
+                print(sorted_fft_freq)
+                y_values = -np.abs(sorted_fft_result)/np.max(sorted_fft_result)
+
+                inverse = np.fft.ifft(sorted_fft_result)
+                #plt.plot(range(len(inverse)), -inverse)
+                #plt.show()
+                freq_domain = True
+                start_sample = 0
+            elif event.key == 122:    #'z' button pressed -- set the selected range to 0
                 history.append(y_values)
                 y_values[drag_rect.left*scale+start_sample:drag_rect.right*scale+1+start_sample] = 0
             elif event.key == 108:    #'l' button pressed -- load a wav file
                 filename = askopenfilename()
                 if filename:
-                    data = scipy.io.wavfile.read(filename)
+                    try:
+                        data = scipy.io.wavfile.read(filename)
+                    except:
+                        print('improperly formatted data file')
+                        break
                     sample_rate = data[0]
                     if data[1].ndim != 1:
                         print('more dims')
@@ -104,7 +144,7 @@ while running:
             elif event.key == 109:      #'m' -- toggle follow
                 toggle_follow = not toggle_follow
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            print(event.button)
+            #print(event.button)
             if event.button == 4:  # Scroll up
                 scale += 1
             elif event.button == 5:  # Scroll down
@@ -143,7 +183,11 @@ while running:
     window.fill(black)
 
     #render mouse text
-    text = font.render('sample num: ' + str(mouse[0]*scale+start_sample), True, white, transparent)
+    if freq_domain:
+        if mouse[0]*scale+start_sample < len(reduced_freq):
+            text = font.render('frequency num: ' + str(reduced_freq[mouse[0]*scale+start_sample]), True, white, transparent)
+    else:
+        text = font.render('sample num: ' + str(mouse[0]*scale+start_sample), True, white, transparent)
     textRect = text.get_rect()
     textRect.center = (window.get_width()-100, window.get_height()-20)
     window.blit(text, textRect)
@@ -169,24 +213,24 @@ while running:
     #plotting the sound samples
     for i in range(len(y_viewing)-1):
         #print((x[i], y_viewing[i]))
-        pygame.draw.aaline(window, (255, 255, 255), (x[i], y_viewing[i]), (x[i + 1], y_viewing[i + 1]))
-        #pygame.draw.circle()
+        pygame.draw.line(window, (255, 255, 255), (x[i], y_viewing[i]), (x[i + 1], y_viewing[i + 1]))
 
     #draw scan line
     if is_playing:
         current_time = time.time() - start_time
         location = sample_rate/scale*current_time - start_sample/scale
+        #print(location)
         if location > 1:
-            pygame.draw.line(window, blue, (location,height/5), (location, 4*height/5))
+            pygame.draw.line(window, blue, (location,window.get_height()/5), (location, 4*window.get_height()/5))
         if current_time > len(y_values)/sample_rate:
             is_playing = False
         #move screen if following
         if toggle_follow:
-            print('following!')
-            start_sample += scale
+            current_sample = current_time*sample_rate
+            if current_sample > window.get_width()*scale/2:
+                start_sample = math.floor(current_sample - window.get_width()*scale/2)
 
     pygame.draw.rect(window, green, drag_rect, width=1) #dragging window
-
     pygame.display.update()
 
 # Quit Pygame
